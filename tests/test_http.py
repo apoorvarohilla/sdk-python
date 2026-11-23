@@ -1460,9 +1460,12 @@ async def test_wait_honors_a_retry_after_longer_than_one_request_retries(
     mode: str, status: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clock = Clock(monkeypatch)
+    seen: list[float] = []
 
     def respond(request: Request, index: int) -> Reply:
-        if index == 0:
+        seen.append(clock.now)
+        # Completion is only offered once the asked-for 90 seconds have passed.
+        if clock.now < seen[0] + 90:
             return Reply(status, {"detail": "Unavailable."}, {"Retry-After": "90"})
         return Reply(body=review())
 
@@ -1470,9 +1473,42 @@ async def test_wait_honors_a_retry_after_longer_than_one_request_retries(
         async with session(mode, server.url) as client:
             result = await call(client, "wait_for_review", ORG, REVIEW, timeout=300)
             assert result.status == "COMPLETED"
-        assert len(server.requests) == 2
-        # Never earlier than asked, slept in steps of at most a minute.
+        assert seen == [seen[0], seen[0] + 90]
+        # Slept in steps of at most a minute.
         assert clock.delays == [60, 30]
+
+
+@MODES
+async def test_wait_holds_a_retry_after_too_long_for_a_float_until_its_deadline(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = Clock(monkeypatch)
+    with Server(
+        lambda request, index: Reply(503, {"detail": "Unavailable."}, {"Retry-After": "9" * 400})
+    ) as server:
+        async with session(mode, server.url) as client:
+            result = await call(client, "wait_for_review", ORG, REVIEW, timeout=150)
+            assert result.status == "TIMED_OUT"
+        assert len(server.requests) == 1
+        assert clock.delays == [60, 60, 30]
+
+
+@MODES
+async def test_wait_retries_a_rate_limit_without_a_problem_document(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    Clock(monkeypatch)
+
+    def respond(request: Request, index: int) -> Reply:
+        if index < 4:
+            return Reply(503, b"<html>Service Unavailable</html>", {"Content-Type": "text/html"})
+        return Reply(body=review())
+
+    with Server(respond) as server:
+        async with session(mode, server.url) as client:
+            result = await call(client, "wait_for_review", ORG, REVIEW, timeout=300)
+            assert result.status == "COMPLETED"
+        assert len(server.requests) == 5
 
 
 @MODES

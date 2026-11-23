@@ -84,9 +84,10 @@ class ProoflineError(Exception):
 
     title names the server's problem class. A refused review request also
     carries the typed refusal, whose reason names the setting to change, and
-    the repository_name it refers to. A 429 or 503 problem the service sent
-    is retryable, and retry_after holds the seconds its valid Retry-After
-    asked for, or None. An encoded or unreadable response is not retryable.
+    the repository_name it refers to. A 429 or 503 whose body was received in
+    full is retryable, even without a problem document, and retry_after holds
+    the seconds its valid Retry-After asked for, or None. A 429 or 503 refused
+    before its body is read, such as an encoded one, is not retryable.
     """
 
     retryable: bool = False
@@ -214,10 +215,8 @@ def retry_after(value: str | None) -> float | None:
         return None
     value = value.strip()
     if value.isascii() and value.isdigit():
-        try:
-            delay = float(value)
-        except (ValueError, OverflowError):
-            return None
+        # More digits than a float holds still ask for a delay: float() gives inf.
+        return float(value)
     else:
         if not any(pattern.fullmatch(value) for pattern in HTTP_DATES):
             return None
