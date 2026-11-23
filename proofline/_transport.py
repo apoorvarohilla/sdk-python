@@ -292,10 +292,7 @@ REFUSAL_SHAPES: dict[str, Callable[[dict[str, Any]], bool]] = {
 def problem(response: httpx2.Response, token: SecretStr) -> ProoflineError:
     try:
         body = response.json()
-        if isinstance(body, dict):
-            body = redacted(body, token.get_secret_value())
-    except (ValueError, UnicodeError, RecursionError):
-        # Nesting too deep to decode or redact is not a problem document either.
+    except (ValueError, UnicodeError):
         body = None
     if not isinstance(body, dict):
         return ProoflineError(
@@ -303,7 +300,7 @@ def problem(response: httpx2.Response, token: SecretStr) -> ProoflineError:
             "about:blank",
             "Proofline returned an HTTP error without a problem document.",
         )
-    body = cast(dict[str, Any], body)
+    body = cast(dict[str, Any], redacted(body, token.get_secret_value()))
     kind = body["type"] if isinstance(body.get("type"), str) else "about:blank"
     title = body["title"] if isinstance(body.get("title"), str) else None
     if isinstance(body.get("detail"), str):
