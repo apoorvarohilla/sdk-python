@@ -1494,14 +1494,23 @@ async def test_wait_holds_a_retry_after_too_long_for_a_float_until_its_deadline(
 
 
 @MODES
+@pytest.mark.parametrize(
+    ("body", "content_type"),
+    [
+        (b"<html>Service Unavailable</html>", "text/html"),
+        # Nesting too deep for the JSON decoder.
+        (b"[" * 100_000 + b"]" * 100_000, "application/problem+json"),
+    ],
+    ids=["html", "deep-json"],
+)
 async def test_wait_retries_a_rate_limit_without_a_problem_document(
-    mode: str, monkeypatch: pytest.MonkeyPatch
+    mode: str, body: bytes, content_type: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    Clock(monkeypatch)
+    clock = Clock(monkeypatch)
 
     def respond(request: Request, index: int) -> Reply:
         if index < 4:
-            return Reply(503, b"<html>Service Unavailable</html>", {"Content-Type": "text/html"})
+            return Reply(503, body, {"Content-Type": content_type})
         return Reply(body=review())
 
     with Server(respond) as server:
@@ -1509,6 +1518,8 @@ async def test_wait_retries_a_rate_limit_without_a_problem_document(
             result = await call(client, "wait_for_review", ORG, REVIEW, timeout=300)
             assert result.status == "COMPLETED"
         assert len(server.requests) == 5
+        # The transport's own backoff (1, 2, 4), then the wait's hold (5) before read five.
+        assert clock.delays == [1, 2, 4, 5]
 
 
 @MODES

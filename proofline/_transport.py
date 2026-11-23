@@ -86,8 +86,9 @@ class ProoflineError(Exception):
     carries the typed refusal, whose reason names the setting to change, and
     the repository_name it refers to. A 429 or 503 whose body was received in
     full is retryable, even without a problem document, and retry_after holds
-    the seconds its valid Retry-After asked for, or None. A 429 or 503 refused
-    before its body is read, such as an encoded one, is not retryable.
+    the seconds its valid Retry-After asked for (inf for more seconds than a
+    float holds), or None. A 429 or 503 refused before its body is read, such
+    as an encoded one, is not retryable.
     """
 
     retryable: bool = False
@@ -291,7 +292,10 @@ REFUSAL_SHAPES: dict[str, Callable[[dict[str, Any]], bool]] = {
 def problem(response: httpx2.Response, token: SecretStr) -> ProoflineError:
     try:
         body = response.json()
-    except (ValueError, UnicodeError):
+        if isinstance(body, dict):
+            body = redacted(body, token.get_secret_value())
+    except (ValueError, UnicodeError, RecursionError):
+        # Nesting too deep to decode or redact is not a problem document either.
         body = None
     if not isinstance(body, dict):
         return ProoflineError(
@@ -299,7 +303,7 @@ def problem(response: httpx2.Response, token: SecretStr) -> ProoflineError:
             "about:blank",
             "Proofline returned an HTTP error without a problem document.",
         )
-    body = cast(dict[str, Any], redacted(body, token.get_secret_value()))
+    body = cast(dict[str, Any], body)
     kind = body["type"] if isinstance(body.get("type"), str) else "about:blank"
     title = body["title"] if isinstance(body.get("title"), str) else None
     if isinstance(body.get("detail"), str):
