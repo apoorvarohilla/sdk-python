@@ -1607,7 +1607,7 @@ async def test_wait_times_out_when_retry_after_outlasts_its_deadline(
 async def test_wait_keeps_the_last_review_read_before_the_service_was_unavailable(
     mode: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    Clock(monkeypatch)
+    clock = Clock(monkeypatch)
 
     def respond(request: Request, index: int) -> Reply:
         if index == 0:
@@ -1620,6 +1620,9 @@ async def test_wait_keeps_the_last_review_read_before_the_service_was_unavailabl
             assert result.status == "TIMED_OUT"
             assert result.review is not None
             assert result.review.status == "RUNNING"
+        # A poll, a 90-second hold, a second unavailable read, then the deadline.
+        assert len(server.requests) == 3
+        assert clock.delays == [5, 60, 30, 5]
 
 
 @MODES
