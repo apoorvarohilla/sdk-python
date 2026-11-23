@@ -84,10 +84,12 @@ class ProoflineError(Exception):
 
     title names the server's problem class. A refused review request also
     carries the typed refusal, whose reason names the setting to change, and
-    the repository_name it refers to. A 429 or 503 carries retry_after, the
-    seconds its valid Retry-After asked for, and None otherwise.
+    the repository_name it refers to. A 429 or 503 problem the service sent
+    is retryable, and retry_after holds the seconds its valid Retry-After
+    asked for, or None. An encoded or unreadable response is not retryable.
     """
 
+    retryable: bool = False
     retry_after: float | None = None
 
     def __init__(
@@ -487,6 +489,8 @@ class RetryTransport(httpx2.BaseTransport):
                 or delay is None
             ):
                 if response.status_code in (429, 503):
+                    # Only a problem read through this retry policy may be retried later.
+                    error.retryable = True
                     error.retry_after = retry_after(response.headers.get("Retry-After"))
                 raise error from None
             sleep(delay_within_deadline(delay))
@@ -540,6 +544,8 @@ class AsyncRetryTransport(httpx2.AsyncBaseTransport):
                 or delay is None
             ):
                 if response.status_code in (429, 503):
+                    # Only a problem read through this retry policy may be retried later.
+                    error.retryable = True
                     error.retry_after = retry_after(response.headers.get("Retry-After"))
                 raise error from None
             await async_sleep(delay_within_deadline(delay))

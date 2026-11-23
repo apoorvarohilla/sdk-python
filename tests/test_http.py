@@ -1471,7 +1471,72 @@ async def test_wait_honors_a_retry_after_longer_than_one_request_retries(
             result = await call(client, "wait_for_review", ORG, REVIEW, timeout=300)
             assert result.status == "COMPLETED"
         assert len(server.requests) == 2
-        assert clock.delays == [90]
+        # Never earlier than asked, slept in steps of at most a minute.
+        assert clock.delays == [60, 30]
+
+
+@MODES
+async def test_wait_sleeps_a_very_long_retry_after_in_bounded_steps(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = Clock(monkeypatch)
+
+    def respond(request: Request, index: int) -> Reply:
+        if index == 0:
+            return Reply(503, {"detail": "Unavailable."}, {"Retry-After": "100000"})
+        return Reply(body=review())
+
+    with Server(respond) as server:
+        async with session(mode, server.url) as client:
+            result = await call(client, "wait_for_review", ORG, REVIEW, timeout=1e12)
+            assert result.status == "COMPLETED"
+        assert len(server.requests) == 2
+        # time.sleep overflows near 1e10 seconds, so no single sleep may grow with the header.
+        assert max(clock.delays) == 60
+        assert sum(clock.delays) == 100000
+
+
+@MODES
+@pytest.mark.parametrize("status", [429, 503])
+async def test_wait_raises_an_encoded_rate_limit_it_cannot_read(
+    mode: str, status: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = Clock(monkeypatch)
+    body = gzip.compress(json.dumps({"detail": "Unavailable."}).encode())
+    with Server(
+        lambda request, index: Reply(status, body, {"Content-Encoding": "gzip", "Retry-After": "0"})
+    ) as server:
+        async with session(mode, server.url) as client:
+            with pytest.raises(ProoflineError) as raised:
+                await call(client, "wait_for_review", ORG, REVIEW, timeout=300)
+            assert raised.value.status == status
+            assert raised.value.type == "urn:proofline:sdk:invalid-response"
+            assert not raised.value.retryable
+        assert len(server.requests) == 1
+        assert clock.delays == []
+
+
+@MODES
+@pytest.mark.parametrize("status", [429, 503])
+async def test_a_rate_limit_problem_carries_its_retry_after(mode: str, status: int) -> None:
+    with Server(
+        lambda request, index: Reply(status, {"detail": "Later."}, {"Retry-After": "75"})
+    ) as server:
+        async with session(mode, server.url) as client:
+            with pytest.raises(ProoflineError) as raised:
+                await call(client, "rerun_review", ORG, REVIEW)
+            assert raised.value.retryable
+            assert raised.value.retry_after == 75
+            with pytest.raises(ProoflineError) as raised:
+                await call(client, "get_finding", ORG, FINDING)
+            assert raised.value.retryable
+            assert raised.value.retry_after == 75
+    with Server(lambda request, index: Reply(403, {"detail": "No."})) as server:
+        async with session(mode, server.url) as client:
+            with pytest.raises(ProoflineError) as raised:
+                await call(client, "get_finding", ORG, FINDING)
+            assert not raised.value.retryable
+            assert raised.value.retry_after is None
 
 
 @MODES

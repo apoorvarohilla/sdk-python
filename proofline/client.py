@@ -555,8 +555,8 @@ class ProoflineClient(Operations):
         head_commit_sha holds the outcome to that commit. A review pinned to
         another head ends the wait on that read and is never COMPLETED.
 
-        A rate limit or unavailable service (429 or 503) does not end the wait:
-        it polls again no sooner than the Retry-After, until the deadline.
+        A retryable rate limit or unavailable service (429 or 503) does not end
+        the wait: it polls again no sooner than the Retry-After, until the deadline.
         """
 
         if not math.isfinite(timeout) or timeout < 0:
@@ -566,19 +566,24 @@ class ProoflineClient(Operations):
         last: CustomerReviewDetail | None = None
         deadline = _transport.DEADLINE.set(monotonic() + timeout)
         interval = 5.0
+        not_before = 0.0
         try:
             while (_transport.remaining() or 0) > 0:
+                held = not_before - monotonic()
+                if held > 0:
+                    # Sleep in bounded steps until the service's Retry-After passes.
+                    sleep(min(held, 60, _transport.remaining() or 0))
+                    continue
                 try:
                     last = self.get_review(organization_id, review_id)
                 except ProoflineError as error:
                     if error.status == 0 and (_transport.remaining() or 0) <= 0:
                         break
-                    if error.status not in (429, 503):
+                    if not error.retryable:
                         raise
                     # The read exhausted its own retries. The service asked to be
                     # polled later, so wait for that within this deadline.
-                    pause = max(interval, error.retry_after or 0)
-                    sleep(min(pause, _transport.remaining() or 0))
+                    not_before = monotonic() + max(interval, error.retry_after or 0)
                     interval = min(60, interval * 2)
                     continue
                 if (_transport.remaining() or 0) <= 0:
@@ -959,19 +964,24 @@ class AsyncProoflineClient(AsyncOperations):
         last: CustomerReviewDetail | None = None
         deadline = _transport.DEADLINE.set(monotonic() + timeout)
         interval = 5.0
+        not_before = 0.0
         try:
             while (_transport.remaining() or 0) > 0:
+                held = not_before - monotonic()
+                if held > 0:
+                    # Sleep in bounded steps until the service's Retry-After passes.
+                    await async_sleep(min(held, 60, _transport.remaining() or 0))
+                    continue
                 try:
                     last = await self.get_review(organization_id, review_id)
                 except ProoflineError as error:
                     if error.status == 0 and (_transport.remaining() or 0) <= 0:
                         break
-                    if error.status not in (429, 503):
+                    if not error.retryable:
                         raise
                     # The read exhausted its own retries. The service asked to be
                     # polled later, so wait for that within this deadline.
-                    pause = max(interval, error.retry_after or 0)
-                    await async_sleep(min(pause, _transport.remaining() or 0))
+                    not_before = monotonic() + max(interval, error.retry_after or 0)
                     interval = min(60, interval * 2)
                     continue
                 if (_transport.remaining() or 0) <= 0:
