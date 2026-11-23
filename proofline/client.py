@@ -554,6 +554,9 @@ class ProoflineClient(Operations):
 
         head_commit_sha holds the outcome to that commit. A review pinned to
         another head ends the wait on that read and is never COMPLETED.
+
+        A rate limit or unavailable service (429 or 503) does not end the wait:
+        it polls again no sooner than the Retry-After, until the deadline.
         """
 
         if not math.isfinite(timeout) or timeout < 0:
@@ -570,7 +573,14 @@ class ProoflineClient(Operations):
                 except ProoflineError as error:
                     if error.status == 0 and (_transport.remaining() or 0) <= 0:
                         break
-                    raise
+                    if error.status not in (429, 503):
+                        raise
+                    # The read exhausted its own retries. The service asked to be
+                    # polled later, so wait for that within this deadline.
+                    pause = max(interval, error.retry_after or 0)
+                    sleep(min(pause, _transport.remaining() or 0))
+                    interval = min(60, interval * 2)
+                    continue
                 if (_transport.remaining() or 0) <= 0:
                     break
                 result = outcome(last, url, review_id=review_id, head_commit_sha=head_commit_sha)
@@ -956,7 +966,14 @@ class AsyncProoflineClient(AsyncOperations):
                 except ProoflineError as error:
                     if error.status == 0 and (_transport.remaining() or 0) <= 0:
                         break
-                    raise
+                    if error.status not in (429, 503):
+                        raise
+                    # The read exhausted its own retries. The service asked to be
+                    # polled later, so wait for that within this deadline.
+                    pause = max(interval, error.retry_after or 0)
+                    await async_sleep(min(pause, _transport.remaining() or 0))
+                    interval = min(60, interval * 2)
+                    continue
                 if (_transport.remaining() or 0) <= 0:
                     break
                 result = outcome(last, url, review_id=review_id, head_commit_sha=head_commit_sha)

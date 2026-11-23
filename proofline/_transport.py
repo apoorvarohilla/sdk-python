@@ -84,8 +84,11 @@ class ProoflineError(Exception):
 
     title names the server's problem class. A refused review request also
     carries the typed refusal, whose reason names the setting to change, and
-    the repository_name it refers to.
+    the repository_name it refers to. A 429 or 503 carries retry_after, the
+    seconds its valid Retry-After asked for, and None otherwise.
     """
+
+    retry_after: float | None = None
 
     def __init__(
         self,
@@ -199,6 +202,14 @@ def retry_delay(value: str | None, attempt: int) -> float | None:
     """An invalid or longer Retry-After returns the problem without an early retry."""
     if value is None:
         return float(2**attempt)
+    delay = retry_after(value)
+    return delay if delay is not None and delay <= 60 else None
+
+
+def retry_after(value: str | None) -> float | None:
+    """The seconds a valid Retry-After asks the client to wait, or None."""
+    if value is None:
+        return None
     value = value.strip()
     if value.isascii() and value.isdigit():
         try:
@@ -229,7 +240,7 @@ def retry_delay(value: str | None, attempt: int) -> float | None:
             delay = max(0.0, (date - now).total_seconds())
         except (ValueError, TypeError, OverflowError):
             return None
-    return delay if math.isfinite(delay) and delay <= 60 else None
+    return delay if math.isfinite(delay) else None
 
 
 def redacted(value: object, raw: str) -> object:
@@ -475,6 +486,8 @@ class RetryTransport(httpx2.BaseTransport):
                 or attempt == 3
                 or delay is None
             ):
+                if response.status_code in (429, 503):
+                    error.retry_after = retry_after(response.headers.get("Retry-After"))
                 raise error from None
             sleep(delay_within_deadline(delay))
         raise timeout_error()
@@ -526,6 +539,8 @@ class AsyncRetryTransport(httpx2.AsyncBaseTransport):
                 or attempt == 3
                 or delay is None
             ):
+                if response.status_code in (429, 503):
+                    error.retry_after = retry_after(response.headers.get("Retry-After"))
                 raise error from None
             await async_sleep(delay_within_deadline(delay))
         raise timeout_error()
